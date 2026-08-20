@@ -117,7 +117,7 @@ int main(void){
     socklen_t sin_size;
     struct sigaction sa;
     int yes = 1;
-    char s[INET6_ADDRSTRLEN];
+    char s[INET6_ADDRSTRLEN]; //for storing the clients address in human readable format. Done by inet_ntop().
     int rv;
 
     memset(&hints, 0, sizeof hints);
