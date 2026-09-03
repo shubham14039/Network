@@ -1,3 +1,10 @@
+//TAG: TODO: Implement a Request router and parser.
+//TAG: TODO: Status code and reponse generator.
+//TAG: TODO: Implement some multithreading.
+//TAG: TODO: Implement a proxy tunnel based on this.
+#include <fcntl.h>
+#include <sys/uio.h>
+#include <sys/stat.h>
 #include <fstream>
 #include <sstream>
 #include <print> 
@@ -13,6 +20,20 @@
 #include <array>
 #include <cstdlib>
 
+// TAG: IMP: Both structs are already built in MacOS system libraries i believe
+// struct iovec{
+//     void *iov_base; //pointer to start of memory buffer
+//     size_t iov_len; //lenght of the buffer
+
+// };
+
+// struct sf_hdtr{
+//    struct iovec *headers; //pointer to header io-vectors
+//    int hdr_cnt; //number fo header iovectors
+//    struct iovec *trailers = nullptr; //pointer to trailer iovectors (in this paarticular case we are setting it to nullptr)
+//    int trl_cnt = 0; //number of trailer io-vectors (in this case we are setting it to 0)
+// };
+
 struct SocketCloser{
     void operator()(int* sock_fd) const{
         if (sock_fd && *sock_fd){
@@ -25,10 +46,8 @@ struct SocketCloser{
 
 void *get_in_addr(struct sockaddr *sa){
     if (sa->sa_family == AF_INET){
-        // return &(((struct sockaddr_in *)sa)->sin_addr);
         return &((reinterpret_cast<struct sockaddr_in *>(sa))->sin_addr);
     }
-    // return &(((struct sockaddr_in6 *)sa)->sin6_addr);
     return &((reinterpret_cast<struct sockaddr_in6 *>(sa))->sin6_addr);
 }
 
@@ -45,6 +64,44 @@ int main(void){
     std::array<char, INET6_ADDRSTRLEN> s{};
     socklen_t sin_size;
     std::array<char, NetworkConfig::MaxDataSize> buffer{};
+
+    int file_fd = open("index.html", O_RDONLY);
+    if (file_fd < 0){
+        std::print(stdout, "file: failed to open the file!\n");
+        return 1;
+    }
+    struct stat file_stat; //TAG: PROBLEM: incomplete type
+    if (fstat(file_fd, &file_stat)< 0){
+        std::string err_msg_file_stat = std::error_code(errno, std::system_category()).message();
+        std::print(stderr, "fstat: fstat failed! {}", err_msg_file_stat);
+    }
+    off_t file_size = file_stat.st_size;
+    std::print(stdout,"the file size is {}\n", std::to_string(file_size));
+
+    off_t len = 0; //for sendfile()
+
+    //prepare the header pieces
+    std::string status_line =  "HTTP/1.1 200 OK\r\n";
+    std::string content_type =  "Content-Type: text/html; charset=UTF-8\r\n";
+    std::string content_len =  "Content-Length: " + std::to_string(file_size) + "\r\n"; //TAG: FIX: Not working.
+    std::string connection =  "Connection: close\r\n\r\n";
+
+    //iovectors
+    struct iovec iov[4];
+    iov[0].iov_base = const_cast<char*>(status_line.data());
+    iov[0].iov_len = status_line.size();
+    iov[1].iov_base = const_cast<char*>(content_type.data());
+    iov[1].iov_len = content_type.size();
+    iov[2].iov_base = const_cast<char*>(content_len.data());
+    iov[2].iov_len = content_len.size();
+    iov[3].iov_base = const_cast<char*>(connection.data());
+    iov[3].iov_len = connection.size();
+
+    struct sf_hdtr hdtr;
+    hdtr.headers = iov;
+    hdtr.hdr_cnt = 4;
+    hdtr.trailers = nullptr;
+    hdtr.trl_cnt = 0;
 
     hints.ai_family = AF_INET6;
     hints.ai_socktype = SOCK_STREAM;
@@ -118,36 +175,46 @@ int main(void){
             }
             std::print(stdout, "server: recieved {}\n", std::string_view(buffer.data(), numbytes));
 
-            //Reading the file from the disk in binary format
-            std::ifstream file("index.html", std::ios::binary);
-            std::string file_content;
-            size_t file_size = 0;
+            ////Reading the file from the disk in binary format
+            //std::ifstream file("index.html", std::ios::binary);
+            //std::string file_content;
+            //size_t file_size = 0;
 
-            if (file.is_open()) {
-                file.seekg(0, std::ios::end);
-                file_size = file.tellg();
-                file.seekg(0, std::ios::beg);
+            //if (file.is_open()) {
+            //    file.seekg(0, std::ios::end);
+            //    file_size = file.tellg();
+            //    file.seekg(0, std::ios::beg);
 
-                std::stringstream buffer_stream;
-                buffer_stream << file.rdbuf();
-                file_content = buffer_stream.str();
-                file.close();
-            } else {
-                // Fallback if index.html is missing
-                file_content = "<h1>404 Not Found</h1><p>index.html missing on server.</p>";
-                file_size = file_content.size();
+            //    std::stringstream buffer_stream;
+            //    buffer_stream << file.rdbuf();
+            //    file_content = buffer_stream.str();
+            //    file.close();
+            //} else {
+            //    // Fallback if index.html is missing
+            //    file_content = "<h1>404 Not Found</h1><p>index.html missing on server.</p>";
+            //    file_size = file_content.size();
+            //}
+            //std::ostringstream response;
+            //response << "HTTP/1.1 200 OK\r\n"
+            //         << "Content-Type: text/html; charset=UTF-8\r\n"
+            //         << "Content-Length: " << file_size << "\r\n"
+            //         << "Connection: close\r\n\r\n" // The double CRLF (\r\n\r\n) separates headers from body
+            //         << file_content;
+
+            //std::string http_response = response.str();
+
+            //TAG: WHY: We are going to use sendfile() for zero-copy transfer. Transfers data directly from file descriptor to a 
+            //TAG: WHY: socket descritor without copying it into user space.
+            //TAG: SIGN: signature of the sendfile function.
+            //TAG: LINK: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/sendfile.2.html
+
+            if (sendfile(file_fd, accept_fd, 0, &len, &hdtr, 0) < 0){
+                std::string err_msg_sendfile = std::error_code(errno, std::system_category()).message();
+                std::print(stderr, "server: sendfile: failed! {}", err_msg_sendfile);
             }
-            std::ostringstream response;
-            response << "HTTP/1.1 200 OK\r\n"
-                     << "Content-Type: text/html; charset=UTF-8\r\n"
-                     << "Content-Length: " << file_size << "\r\n"
-                     << "Connection: close\r\n\r\n" // The double CRLF (\r\n\r\n) separates headers from body
-                     << file_content;
-
-            std::string http_response = response.str();
-            if (send(accept_fd, http_response.c_str(), http_response.size(), 0) < 0){
-                std::print(stderr, "server: send: failed!\n");
-            }
+            // if (send(accept_fd, http_response.c_str(), http_response.size(), 0) < 0){
+            //     std::print(stderr, "server: send: failed!\n");
+            // }
 
             close(accept_fd);
             std::exit(EXIT_SUCCESS);
