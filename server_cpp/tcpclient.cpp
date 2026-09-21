@@ -13,7 +13,7 @@
 
 namespace NetworkConfig{
     static inline constexpr const char* Port = "3490";
-    inline constexpr int MaxDataSize = 100;
+    inline constexpr int MaxDataSize = 4096;
 }
 
 struct AddrInfoDelete{
@@ -94,13 +94,19 @@ int main(int argc, char* argv[]){
     inet_ntop(p->ai_family, get_in_addr(reinterpret_cast<struct sockaddr *>(p->ai_addr)), s.data(), s.size());
     std::print(stdout, "client: connected to {}\n", s.data());
     
+    //send something to the HTTP server in order to initiaate the sendfile() of the server
+    std::array<char, 6> m{"hello"};
+    if (send(sockfd, &m, 6, 0) == -1){
+        std::print(stderr, "send: failed to send data!");
+        return 1;
+    }
 
-    if ((numbytes = recv(sockfd, buff.data(), NetworkConfig::MaxDataSize -1, 0)) == -1){
+    if ((numbytes = recv(sockfd, buff.data(), NetworkConfig::MaxDataSize -1, 0)) == -1){ //TAG: FIX: Where is data being stored
         std::print(stderr, "recv: \n");
         std::exit(EXIT_FAILURE);
     }
 
-    std::print("client: recieved {}\n", std::string_view(buff.data(), numbytes));
+    std::print("client: recieved: {} bytes of data. Including:  {}\n", numbytes, std::string_view(buff.data(), numbytes));
     close(sockfd);
 
     return 0;
