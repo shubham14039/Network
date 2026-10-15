@@ -286,6 +286,7 @@ class HTTP {
                     int numbytes = recv(client_socket.get(), buffer.data(), MaxDataSize - 1, 0);
                     if (numbytes < 0){
                         throw std::runtime_error("[+] Recieve failed from: {}\n", client_socket.get());
+                        //TAG: CATCH: catch the exception and act accordingly
                         // std::print(stderr, "[+] Recieve failed!\n");
                         // std::exit(EXIT_FAILURE);
                     }
@@ -295,22 +296,89 @@ class HTTP {
                     //What ever data is requested from the client
                     //that is parsed and handled according to the uri
                     //and then that particular data is sent
-                    //TAG: HOW: Prepare the data object to be parsed
-                    //TAG: RETURN: Call ReturnResponse() function to send the return response package
+
+                    //sending via serve fucntion 
+                    serve(filepath, client_socket.get());
                     std::exit(EXIT_SUCCESS);
                 }
             }
             return true; //TAG: IDK:
         }
 
-        void ReturnResponse(){ //Create a return response package
-
-        } 
-
-
     public:
-        void serve(){
-            //serve the file provided by the user
+        void serve(const std::string& filepath, int send_fd){
+            //check if the path provided contains valid file
+
+            int file_fd = open(filepath, O_RDONLY);
+            if (file_fd < 0){
+                throw std::runtime_error("Error opening the file!");
+            }
+
+            struct stat file_stat;
+            if (fstat(file_fd, &file_stat) < 0){
+                std::string err = std::error_code(errno, std::system_category()).message();
+                std::print(stderr, "Fstat failed: {}\n", err);
+            }
+
+            off_t len = 0;
+            off_t remaining = file_stat.st_size;
+
+            //opening the file
+            // std::ifstream file(filepath, std::ios::binary | std::ios::ate){
+            //     if (!file.is_open()){
+            //         throw std::runtime_error("Failed to open the file");
+            //     }
+            // }
+
+            // std::streamsize file_size = file.tellg();
+            // file.seekg(0, std::ios::beg);
+
+            // const size_t BUFFER_SIZE = 4096; //4kb of buffer size
+            // std::vector<char> buffer(BUFFER_SIZE);
+
+            //return response stream object
+            std::string status_line =  "HTTP/1.1 200 OK\r\n";
+            std::string content_type =  "Content-Type: text/html; charset=UTF-8\r\n";
+            std::string content_len =  "Content-Length: " + remaining + "\r\n";
+            std::string connection =  "Connection: close\r\n\r\n";
+
+            //iovectors
+            struct iovec iov[4];
+            iov[0].iov_base = const_cast<char*>(status_line.data());
+            iov[0].iov_len = status_line.size();
+            iov[1].iov_base = const_cast<char*>(content_type.data());
+            iov[1].iov_len = content_type.size();
+            iov[2].iov_base = const_cast<char*>(content_len.data());
+            iov[2].iov_len = content_len.size();
+            iov[3].iov_base = const_cast<char*>(connection.data());
+            iov[3].iov_len = connection.size();
+
+            struct sf_hdtr hdtr;
+            hdtr.headers = iov;
+            hdtr.hdr_cnt = 4;
+            hdtr.trailers = nullptr;
+            hdtr.trl_cnt = 0;
+
+            int nopush = 1;
+            setsockopt(send_fd, IPPROTO_TCP, TCP_NOPUSH, &nopush, sizeof(nopush));
+
+            write(send_fd, headers, strlen(headers)); //TAG: FIX: headers are of hdtr type and change strlen accordingly
+
+            //stream loop
+            while (remaining > 0){
+                if (sendfile(file_fd, send_fd, 0, &len, nullptr, 0) < 0){ //TAG: FIX: chunking not happening here
+                    throw std::runtime_error("Sending *this chunk of file failed!");
+                    //TAG: CATCH: catch the exception and act accordingly
+                }
+                //sending chunk via sendfile()
+                //errors should be handled for exceptions inproduction 
+            }
+            
+            nopush = 0;
+            setsockopt(send_fd, IPPROTO_TCP, TCP_NOPUSH, &nopush, sizeof(nopush));
+
+            file.close();
+            std::print("File streaming completed successfully!\n");
         }
 
         void terminate(){

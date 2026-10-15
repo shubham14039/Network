@@ -1,7 +1,5 @@
-//TAG: TODO: Implement a Request router and parser.
-//TAG: TODO: Status code and reponse generator.
-//TAG: TODO: Implement some multithreading.
 //TAG: TODO: Implement a proxy tunnel based on this.
+#include <csignal>
 #include <fcntl.h>
 #include <sys/uio.h>
 #include <sys/stat.h>
@@ -51,6 +49,12 @@ void *get_in_addr(struct sockaddr *sa){
     return &((reinterpret_cast<struct sockaddr_in6 *>(sa))->sin6_addr);
 }
 
+extern "C" void sigchild_handler([[maybe_unused]] int signo){
+    int saved_errno = errno;
+    while(waitpid(-1, nullptr, WNOHANG) > 0);
+    errno = saved_errno;
+}
+
 namespace NetworkConfig{
     static inline constexpr const char* Port = "3490";
     inline constexpr int BackLog = 10;
@@ -58,12 +62,14 @@ namespace NetworkConfig{
 }
 
 int main(void){
+    std::print("my pid is: {}\n", getpid());
     struct addrinfo hints{}, *servinfo;
     int yes = 1;
     struct sockaddr_storage their_addr_storage; //this is populated by the kernel with the address information of the connecting client.
     std::array<char, INET6_ADDRSTRLEN> s{};
     socklen_t sin_size;
     std::array<char, NetworkConfig::MaxDataSize> buffer{};
+    struct sigaction sa;
 
     int file_fd = open("index.html", O_RDONLY);
     if (file_fd < 0){
@@ -145,6 +151,16 @@ int main(void){
         std::print(stderr, "server: listen: {}\n",err_msgListen);
         return 1;
     }
+
+    //sigchild handler part
+    sa.sa_handler = sigchild_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &sa, nullptr) == -1){
+        std::print(stderr, "sigaction\n");
+        std::exit(EXIT_FAILURE);
+    }
+
     std::print(stdout, "server: listening for incoming connections . . . \n");
 
     //acceptig connections
