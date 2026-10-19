@@ -1,4 +1,12 @@
+//TAG: TAGS: tags used in this file
+//TAG: FIX: problems to be fixed
+//TAG: CATCH: Catch exceptions 
+//TAG: ADVANCE: later implementations
+//TAG: PARSER: parser related
+//TAG: IDK: I dont have any idea what's happening there and why
+#include <format>
 #include <map>
+#include <cstring>
 #include <algorithm>
 #include <fcntl.h>
 #include <sys/uio.h>
@@ -13,24 +21,42 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <array>
 #include <cstdlib>
+#include <signal.h>
 
 //Exception classes
-class SomeException : public std::excetption {
+class SomeException : public std::runtime_error {
+    private: 
+        int error_code_;
 
+    public:
+        SomeException(int code, const std::string& message) : std::runtime_error(message), error_code_(code){}
+
+        int get_error_code() const{
+            return error_code_;
+        }
 };
 
 //HTTP request object
 struct HttpRequest{
     std::string method;
     std::string path;
+    std::string version;
     std::map<std::string, std::string> headers;
     std::string body;
 };
+
+extern "C" void sigchld_handler([[maybe_unused]] int signo){
+    int saved_errno = errno;
+    while(waitpid(-1, nullptr, WNOHANG) > 0){
+        errno = saved_errno;
+    }
+}
 
 //Parser class object
 class Parser{
@@ -54,6 +80,7 @@ class Parser{
             if (!(line_stream >> request.version)){
                 return false;
             }
+            return true;
         }
 
         //Header line parsing 
@@ -75,7 +102,7 @@ class Parser{
             //lowercase
             std::transform(key.begin(), key.end(), key.begin(), ::tolower);
             
-            headers[key] = value;
+            header[key] = value;
             return true;
         }
 
@@ -109,7 +136,7 @@ class Parser{
 
             //parse the request line
             if (std::getline(stream, line)){
-                if (!line.empty() && line.back() == "\r"){
+                if (!line.empty() && line.back() == '\r'){
                     line.pop_back();
                 }
 
@@ -125,7 +152,7 @@ class Parser{
 
             //parse subsequent lines until the end
             while (std::getline(stream, line)){
-                if (!line.empty() && line.back() == "\r"){
+                if (!line.empty() && line.back() == '\r'){
                     line.pop_back();
                 }
 
@@ -205,21 +232,25 @@ class HTTP {
 
         static constexpr int BackLog = 10;
         static constexpr int MaxDataSize = 4096;
+
         const char* Port = nullptr; //To be passed by the executioner
         struct addrinfo hints{}, *servinfo;
         struct sockaddr_storage their_addr_storage;
+
         int yes = 1;
+
         socklen_t sin_size;
         std::array<char, INET6_ADDRSTRLEN> s{};
         std::array<char, MaxDataSize> buffer{}; //4KB of buffer size
+
         int rv;
+
         ScopedSocket sockfd; //Socket object 
-        Parser parser; //TAG: PARSER: Parser object to be used to parse incoming stream using {Composition}. Other method includes {Dependency injection}
+        Parser& _parser;
 
         int start(){
             if (!sockfd.isValid()){
-                throw std::out_of_range("SOCKET: ");
-                //TAG: CATCH: Catch the exception and get out of the function 
+                throw SomeException(-1, "SOCKET: socket is not valid!\n");
             }
 
             hints.ai_family = AF_INET6;
@@ -231,22 +262,24 @@ class HTTP {
                 return 1;
             }
 
-            if (setsockopt(sockfd.get(), SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0){
-                throw std::system_error(errno, std::system_category(), "SOCKET: ");
-                //TAG: CATCH: Catch the error and exit the whole program using std::exit(EXIT_FAILURE)
+            try {
+                if (setsockopt(sockfd.get(), SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0){
+                    throw std::system_error(errno, std::system_category(), "SOCKET: ");
+                }
+
+                std::print("SOCKET: socket created successfully on port: {}\n", Port);
+
+                if ((rv = (bind(sockfd.get(), servinfo->ai_addr, servinfo->ai_addrlen))) < 0){
+                    throw std::system_error(errno, std::system_category(), "SOCKET: ");
+                }
+                freeaddrinfo(servinfo);
+
+                if ((rv = (listen(sockfd.get(), BackLog))) < 0){
+                    throw std::system_error(errno, std::system_category(), "SOCKET: ");
+                }
             }
-
-            std::print("SOCKET: socket created successfully on port: {}\n", Port);
-
-            if ((rv = (bind(sockfd.get(), servinfo->ai_addr, servinfo->ai_addrlen))) < 0){
-                throw std::system_error(errno, std::system_category(), "SOCKET: ");
-                //TAG: CATCH: Catch the error and get out of the fucntion 
-            }
-            freeaddrinfo(servinfo);
-
-            if ((rv = (listen(sockfd.get(), BackLog))) < 0){
-                throw std::system_error(errno, std::system_category(), "SOCKET: ");
-                //TAG: CATCH: Catch the error and get out of the fucntion 
+            catch (const std::system_error& e){
+                std::print(stderr, "System error caught: {}\n", e.what());
             }
 
             std::print(stdout, "[+] Server listening for incoming connections on port {} . . .\n", Port);
@@ -262,6 +295,16 @@ class HTTP {
         }
 
         bool run(){
+            struct sigaction sa;
+            sa.sa_handler = sigchld_handler;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_RESTART;
+
+            if (sigaction(SIGCHLD, &sa, nullptr) == -1){
+                std::print(stderr, "sigaction\n");
+                std::exit(EXIT_FAILURE);
+            }
+
             while(true){
                 sin_size = sizeof(their_addr_storage);
                 int acceptfd = accept(sockfd.get(), reinterpret_cast<struct sockaddr*>(&their_addr_storage), &sin_size);
@@ -275,7 +318,7 @@ class HTTP {
                 inet_ntop(their_addr_storage.ss_family, get_in_addr(reinterpret_cast<struct sockaddr*>(&their_addr_storage)), s.data(), s.size());
                 std::print("[+] Got a connection from {} on {}\n", s.data(), Port);
 
-                pid_t pid = fork();
+                pid_t pid = fork(); //TAG: ADVANCE: shift towards worker thread pool model or event driven architecture
                 if (pid < 0){
                     std::print(stderr, "[-] Fork failed!\n");
                     continue;
@@ -285,10 +328,7 @@ class HTTP {
                     sockfd.close();
                     int numbytes = recv(client_socket.get(), buffer.data(), MaxDataSize - 1, 0);
                     if (numbytes < 0){
-                        throw std::runtime_error("[+] Recieve failed from: {}\n", client_socket.get());
-                        //TAG: CATCH: catch the exception and act accordingly
-                        // std::print(stderr, "[+] Recieve failed!\n");
-                        // std::exit(EXIT_FAILURE);
+                        throw std::runtime_error(std::format("[+] Recieve failed from: {}\n", client_socket.get()));
                     }
                     std::print(stdout, "[+] Recieved {}\n", std::string_view(buffer.data(), numbytes));
 
@@ -298,7 +338,9 @@ class HTTP {
                     //and then that particular data is sent
 
                     //sending via serve fucntion 
-                    serve(filepath, client_socket.get());
+                    // TAG: FIX: pause the execution here and serve the file
+                    // Or alternatively, make a persistent connection and wait for the server to serve files
+                    // serve(filepath, client_socket.get());
                     std::exit(EXIT_SUCCESS);
                 }
             }
@@ -309,7 +351,7 @@ class HTTP {
         void serve(const std::string& filepath, int send_fd){
             //check if the path provided contains valid file
 
-            int file_fd = open(filepath, O_RDONLY);
+            int file_fd = open(filepath.c_str(), O_RDONLY);
             if (file_fd < 0){
                 throw std::runtime_error("Error opening the file!");
             }
@@ -320,79 +362,64 @@ class HTTP {
                 std::print(stderr, "Fstat failed: {}\n", err);
             }
 
-            off_t len = 0;
+            off_t current_offset = 0;
             off_t remaining = file_stat.st_size;
 
-            //opening the file
-            // std::ifstream file(filepath, std::ios::binary | std::ios::ate){
-            //     if (!file.is_open()){
-            //         throw std::runtime_error("Failed to open the file");
-            //     }
-            // }
-
-            // std::streamsize file_size = file.tellg();
-            // file.seekg(0, std::ios::beg);
-
-            // const size_t BUFFER_SIZE = 4096; //4kb of buffer size
-            // std::vector<char> buffer(BUFFER_SIZE);
-
-            //return response stream object
-            std::string status_line =  "HTTP/1.1 200 OK\r\n";
-            std::string content_type =  "Content-Type: text/html; charset=UTF-8\r\n";
-            std::string content_len =  "Content-Length: " + remaining + "\r\n";
-            std::string connection =  "Connection: close\r\n\r\n";
-
-            //iovectors
-            struct iovec iov[4];
-            iov[0].iov_base = const_cast<char*>(status_line.data());
-            iov[0].iov_len = status_line.size();
-            iov[1].iov_base = const_cast<char*>(content_type.data());
-            iov[1].iov_len = content_type.size();
-            iov[2].iov_base = const_cast<char*>(content_len.data());
-            iov[2].iov_len = content_len.size();
-            iov[3].iov_base = const_cast<char*>(connection.data());
-            iov[3].iov_len = connection.size();
-
-            struct sf_hdtr hdtr;
-            hdtr.headers = iov;
-            hdtr.hdr_cnt = 4;
-            hdtr.trailers = nullptr;
-            hdtr.trl_cnt = 0;
+            std::string headers = "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: text/html; charset=UTF-8\r\n" //TAG: FIX: change content type to whatever file youre sending
+                          "Content-Length: " + std::to_string(remaining) + "\r\n"
+                          "Connection: close\r\n\r\n"; //TAG: ADVANCE: shift to persistent connections
 
             int nopush = 1;
             setsockopt(send_fd, IPPROTO_TCP, TCP_NOPUSH, &nopush, sizeof(nopush));
 
-            write(send_fd, headers, strlen(headers)); //TAG: FIX: headers are of hdtr type and change strlen accordingly
+            ssize_t written = write(send_fd, headers.c_str(), headers.length());
+            if (written < 0){
+                close(file_fd);
+                throw std::runtime_error("Error writing HTTP headers");
+            }
 
             //stream loop
-            while (remaining > 0){
-                if (sendfile(file_fd, send_fd, 0, &len, nullptr, 0) < 0){ //TAG: FIX: chunking not happening here
-                    throw std::runtime_error("Sending *this chunk of file failed!");
-                    //TAG: CATCH: catch the exception and act accordingly
+            try {
+                while(remaining > 0){
+                    off_t bytes_to_send = remaining;
+                    int result = sendfile(file_fd, send_fd, current_offset, &bytes_to_send, nullptr, 0);
+
+                    if (result < 0){
+                        if (errno == EAGAIN || errno == EINTR){
+                            continue;
+                        }
+                        throw std::system_error(errno, std::system_category(), "Sendfile chunk failed");
+                    }
+                    current_offset += bytes_to_send;
+                    remaining -= bytes_to_send;
                 }
-                //sending chunk via sendfile()
-                //errors should be handled for exceptions inproduction 
+            }
+
+            catch (...){
+                nopush = 0;
+                setsockopt(send_fd, IPPROTO_TCP, TCP_NOPUSH, &nopush, sizeof(nopush));
+                close(file_fd);
+                throw;
             }
             
             nopush = 0;
             setsockopt(send_fd, IPPROTO_TCP, TCP_NOPUSH, &nopush, sizeof(nopush));
 
-            file.close();
+            close(file_fd);
             std::print("File streaming completed successfully!\n");
         }
 
-        void terminate(){
-            //terminate the whole server and call destructor 
-        }
+        //void terminate(){
+        //    //terminate the whole server and call destructor 
+        //}
 
-        //Other functionality to be given to the user to
+        //Other functionality to be given to the user
 
-        HTTP(const char* port) : sockfd(AF_INET6, SOCK_STREAM, IPPROTO_TCP), Port(port){
-            //construcctor body
-        }
+        HTTP(const char* port, Parser& parser) : sockfd(AF_INET6, SOCK_STREAM, IPPROTO_TCP), Port(port), _parser(parser){}
 
-        ~HTTP(){ //destructor body
-            stop(); //calling the stop function.
+        ~HTTP(){
+            std::print("[CLEANUP] closing server socket and releasing resources!\n");
         }
 };
 
@@ -401,5 +428,17 @@ int main(int argc, char* argv[]){
         std::print(stderr, "USAGE: provide valid port number\n");
         std::exit(EXIT_FAILURE);
     }
-    return 0;
+
+    const char* port = argv[1];
+
+    Parser parser; //parser object passed via dependency injection
+    try {
+        HTTP http_server(port, parser);
+    }
+    catch (const std::system_error& e){
+        std::print(stderr, "\n[FATAL ERROR] {}\n", e.what());
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }
