@@ -1,12 +1,10 @@
 //TAG: TAGS: tags used in this file
 //TAG: FIX: problems to be fixed
-//TAG: CATCH: Catch exceptions 
 //TAG: ADVANCE: later implementations
-//TAG: PARSER: parser related
-//TAG: IDK: I dont have any idea what's happening there and why
 #include <format>
 #include <map>
 #include <cstring>
+#include <string>
 #include <algorithm>
 #include <fcntl.h>
 #include <sys/uio.h>
@@ -140,7 +138,7 @@ class Parser{
                     line.pop_back();
                 }
 
-                if (parseRequestLine(line, request)){
+                if (!parseRequestLine(line, request)){
                     return false; //malformed request line
                 }
             }
@@ -332,22 +330,13 @@ class HTTP {
                     }
                     std::print(stdout, "[+] Recieved {}\n", std::string_view(buffer.data(), numbytes));
 
-                    //sending data goes here
-                    //What ever data is requested from the client
-                    //that is parsed and handled according to the uri
-                    //and then that particular data is sent
-
-                    //sending via serve fucntion 
-                    // TAG: FIX: pause the execution here and serve the file
-                    // Or alternatively, make a persistent connection and wait for the server to serve files
-                    // serve(filepath, client_socket.get());
+                    serve("index.html", client_socket.get());
                     std::exit(EXIT_SUCCESS);
                 }
             }
-            return true; //TAG: IDK:
+            return true;
         }
 
-    public:
         void serve(const std::string& filepath, int send_fd){
             //check if the path provided contains valid file
 
@@ -410,13 +399,18 @@ class HTTP {
             std::print("File streaming completed successfully!\n");
         }
 
+    public:
+
         //void terminate(){
         //    //terminate the whole server and call destructor 
         //}
 
         //Other functionality to be given to the user
 
-        HTTP(const char* port, Parser& parser) : sockfd(AF_INET6, SOCK_STREAM, IPPROTO_TCP), Port(port), _parser(parser){}
+        HTTP(const char* port, Parser& parser) : sockfd(AF_INET6, SOCK_STREAM, IPPROTO_TCP), Port(port), _parser(parser){
+            start();
+            run();
+        }
 
         ~HTTP(){
             std::print("[CLEANUP] closing server socket and releasing resources!\n");
@@ -426,7 +420,13 @@ class HTTP {
 int main(int argc, char* argv[]){
     if (argc != 2){
         std::print(stderr, "USAGE: provide valid port number\n");
-        std::exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
+    }
+
+    int to_be_port = std::stoi(argv[1]);
+    if (to_be_port < 1024 || to_be_port > 65535){
+        std::print(stderr, "USAGE: provide a port number between 1024 & 65535\n");
+        return EXIT_FAILURE;
     }
 
     const char* port = argv[1];
